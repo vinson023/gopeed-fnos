@@ -1,0 +1,143 @@
+[
+    {
+        "stepTitle": "关于 Gopeed",
+        "items": [
+            {
+                "type": "tips",
+                "helpText": "Gopeed 是一款开源的现代下载器，内核用 Go 编写，界面用 Flutter 编写。这个飞牛版本内置了官方 headless 引擎和完整 Web UI，装完打开桌面图标就能添加任务。<br><br>支持的协议：<b>HTTP / HTTPS / FTP / BitTorrent / 磁力链接 / Metalink</b>。<br><br>下载的文件写入<b>飞牛共享目录</b>，在「文件管理」里能直接改名、移动、删除；想下到别的位置，可以装完后在「应用设置 → 授权目录」里授权，再到 Gopeed 界面里选择该目录。<br><br>本包同时提供 <b>x86 与 ARM</b> 两个架构版本，请安装与设备架构匹配的那一个。"
+            }
+        ]
+    },
+    {
+        "stepTitle": "访问与安全",
+        "items": [
+            {
+                "type": "tips",
+                "helpText": "<b>访问端口固定为 __PORT__</b>：安装完成后，桌面图标指向 <code>http://飞牛地址:__PORT__</code>，不提供端口修改（飞牛在安装时就把地址写进桌面图标，改端口会导致图标打不开）。如果该端口已被其他程序占用，可以先释放它，或用 <code>python build.py --port 其他端口</code> 重新出一个包。<br><br><b>内网与外网都支持</b>：应用内置 HTTP/HTTPS 自适应入口，用内网 <code>http://IP:5666</code> 打开桌面时走 http，用域名走 <code>https</code> 打开桌面时自动用飞牛已有的证书做 TLS（复用 fnOS 证书，不会有证书告警）。<b>外网使用需要在路由器上把 __PORT__（TCP）也映射到这台飞牛</b>，否则外网打开会是空白页。<br><br>Gopeed 的端口<b>不经过飞牛登录态校验</b>，所以下面默认开启 Web 登录保护。"
+            },
+            {
+                "type": "text",
+                "field": "wizard_web_user",
+                "label": "登录账号",
+                "initValue": "admin",
+                "description": "打开页面时的登录账号。Gopeed 的端口不经过飞牛登录态校验，谁能访问这个端口谁就能管理下载器，因此默认开启登录保护。",
+                "rules": [
+                    {
+                        "required": true,
+                        "message": "请填写账号"
+                    },
+                    {
+                        "pattern": "^[A-Za-z0-9_.@#-]{1,64}$",
+                        "message": "只能用字母、数字和 _ . @ # -"
+                    }
+                ]
+            },
+            {
+                "type": "password",
+                "field": "wizard_web_pass",
+                "label": "登录密码",
+                "initValue": "gopeed",
+                "description": "登录密码，默认 gopeed，<b>建议改成自己的</b>。留空可以关闭登录保护（仅建议在完全可信的内网使用）。",
+                "rules": [
+                    {
+                        "pattern": "^$|^[A-Za-z0-9_.@#!-]{1,64}$",
+                        "message": "只能用字母、数字和 _ . @ # ! -"
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "stepTitle": "下载与网络",
+        "items": [
+            {
+                "type": "text",
+                "field": "wizard_run_user",
+                "label": "运行身份（飞牛用户）",
+                "initValue": "admin",
+                "description": "Gopeed 以哪个飞牛用户身份运行。<b>下载出来的文件属主就是这个用户</b>，它也决定了 Gopeed 能写入哪些目录。默认 admin；如果想让下载独立归档，可以先在飞牛里建一个专用账号（如 <code>downloads</code>），再把用户名填在这里。填写不存在的用户时会回退到应用专用用户（此时只能写共享目录）。",
+                "rules": [
+                    {
+                        "required": true,
+                        "message": "请填写用户名"
+                    },
+                    {
+                        "pattern": "^[A-Za-z0-9_.-]{1,32}$",
+                        "message": "只能包含字母、数字、_ . -"
+                    }
+                ]
+            },
+            {
+                "type": "text",
+                "field": "wizard_download_dir",
+                "label": "默认下载目录（留空＝共享目录）",
+                "initValue": "",
+                "description": "留空则使用系统为本应用创建的共享目录（安装后在「文件管理」里的 gopeed/downloads）。填写绝对路径可指定其他目录，例如 /vol1/1000/Downloads，安装时会自动为该目录授权。此值只在首次安装时作为初始下载目录，之后请在 Gopeed 界面里调整。",
+                "rules": [
+                    {
+                        "pattern": "^$|^/[A-Za-z0-9._/-]+$",
+                        "message": "必须是绝对路径，或留空"
+                    }
+                ]
+            },
+            {
+                "type": "text",
+                "field": "wizard_bt_port",
+                "label": "BT 监听端口",
+                "initValue": "51413",
+                "description": "BitTorrent 的入站监听端口，默认 51413（刻意为避开 6881-6889 —— 这几个传统 BT 端口在部分运营商线路上会被限速）。想让 BT 速度更好，需要在路由器上把这个端口（<b>TCP+UDP</b>）转发到飞牛；IPv6 直连只需防火墙放行。此值会写入引擎，之后可在 Gopeed 设置里改。",
+                "rules": [
+                    {
+                        "required": true,
+                        "message": "请填写端口"
+                    },
+                    {
+                        "pattern": "^[0-9]{2,5}$",
+                        "message": "端口只能是数字（1-65535）"
+                    }
+                ]
+            },
+            {
+                "type": "text",
+                "field": "wizard_ed2k_port",
+                "label": "ED2K TCP 端口",
+                "initValue": "4662",
+                "description": "eD2K/eMule 网络的 TCP 监听端口，默认 4662。只有在端口固定且外部能连到你时，才会拿到 <b>HighID</b>（排队快、来源多）；随机端口会掉成 LowID，很多来源直接排不上。只用 HTTP/BT 的话这项可以不管。",
+                "rules": [
+                    {
+                        "required": true,
+                        "message": "请填写端口"
+                    },
+                    {
+                        "pattern": "^[0-9]{2,5}$",
+                        "message": "端口只能是数字（1-65535）"
+                    }
+                ]
+            },
+            {
+                "type": "text",
+                "field": "wizard_ed2k_udp_port",
+                "label": "ED2K UDP 端口",
+                "initValue": "4672",
+                "description": "eD2K 的 UDP 监听端口，默认 4672（UDP 源请求/服务器查询）。同样建议固定，并在路由器上做 TCP+UDP 转发。",
+                "rules": [
+                    {
+                        "required": true,
+                        "message": "请填写端口"
+                    },
+                    {
+                        "pattern": "^[0-9]{2,5}$",
+                        "message": "端口只能是数字（1-65535）"
+                    }
+                ]
+            },
+            {
+                "type": "switch",
+                "field": "wizard_auto_start",
+                "label": "启动时自动续传未完成任务",
+                "initValue": "true",
+                "description": "开启后，应用启动时会自动继续上次没下完的任务（仅首次安装时作为初始值，之后可在 Gopeed 设置里修改）。"
+            }
+        ]
+    }
+]

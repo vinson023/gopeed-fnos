@@ -1,0 +1,3 @@
+#!/bin/bash
+# delegate to the shared controller; wizard values stay in the exported environment
+exec "$(dirname "$0")/main" install_init

@@ -1,0 +1,26 @@
+[
+    {
+        "stepTitle": "卸载选项",
+        "items": [
+            {
+                "type": "tips",
+                "helpText": "卸载会移除程序本体。<b>已下载的文件保存在下载目录里，不会被删除</b>，请自行决定是否保留。"
+            },
+            {
+                "type": "radio",
+                "field": "wizard_data_action",
+                "label": "应用配置与数据",
+                "initValue": "keep",
+                "description": "这里指登录账号密码、下载目录、端口等设置，以及任务列表、进度、缓存和日志。它们与下载好的文件分开存放。",
+                "options": [
+                    { "label": "保留配置与任务数据（推荐，重装后设置和任务都还在）", "value": "keep" },
+                    { "label": "不保留，全部清空（重装等于全新安装）", "value": "purge" }
+                ]
+            },
+            {
+                "type": "tips",
+                "helpText": "选择「不保留，全部清空」时，会删除应用配置目录与数据目录下的全部内容：<code>gopeed.conf</code>（账号/密码/端口/下载目录）、任务数据库 <code>gopeed.db</code>、扩展、TLS 证书副本、临时文件与日志。<b>下载目录里的文件不受影响</b>，如需一并清理请到「文件管理」手动删除。"
+            }
+        ]
+    }
+]

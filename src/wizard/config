@@ -1,0 +1,110 @@
+[
+    {
+        "stepTitle": "访问与安全",
+        "items": [
+            {
+                "type": "tips",
+                "helpText": "修改后应用会自动重启，已下载的数据和任务进度都会保留。<br>访问端口固定为 <code>__PORT__</code>，不提供修改。"
+            },
+            {
+                "type": "text",
+                "field": "wizard_web_user",
+                "label": "登录账号",
+                "initValue": "admin",
+                "rules": [
+                    {
+                        "required": true,
+                        "message": "请填写账号"
+                    },
+                    {
+                        "pattern": "^[A-Za-z0-9_.@#-]{1,64}$",
+                        "message": "只能用字母、数字和 _ . @ # -"
+                    }
+                ]
+            },
+            {
+                "type": "password",
+                "field": "wizard_web_pass",
+                "label": "登录密码",
+                "initValue": "",
+                "description": "留空表示不修改当前密码。修改后请在下次打开页面时用新密码登录。",
+                "rules": [
+                    {
+                        "pattern": "^$|^[A-Za-z0-9_.@#!-]{1,64}$",
+                        "message": "只能用字母、数字和 _ . @ # ! -"
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "stepTitle": "下载与网络",
+        "items": [
+            {
+                "type": "text",
+                "field": "wizard_run_user",
+                "label": "运行身份（飞牛用户）",
+                "initValue": "",
+                "description": "<b>留空表示保持当前运行身份不变</b>。该用户决定下载文件的属主与可写范围，改动会重启导致正在运行的任务短暂中断。",
+                "rules": [
+                    {
+                        "pattern": "^$|^[A-Za-z0-9_.-]{1,32}$",
+                        "message": "只能包含字母、数字、_ . -，或留空表示不修改"
+                    }
+                ]
+            },
+            {
+                "type": "text",
+                "field": "wizard_download_dir",
+                "label": "默认下载目录",
+                "initValue": "",
+                "description": "留空表示保持当前设置。填写绝对路径会切换到该目录，并自动为应用用户授权；用「应用设置 → 授权目录」授权过的目录，在 Gopeed 界面里也能直接选择。",
+                "rules": [
+                    {
+                        "pattern": "^$|^/[A-Za-z0-9._/-]+$",
+                        "message": "必须是绝对路径，或留空"
+                    }
+                ]
+            },
+            {
+                "type": "text",
+                "field": "wizard_bt_port",
+                "label": "BT 监听端口",
+                "initValue": "",
+                "rules": [
+                    {
+                        "pattern": "^$|^[0-9]{2,5}$",
+                        "message": "端口只能是数字（1-65535），或留空表示不修改"
+                    }
+                ],
+                "description": "<b>留空表示保持当前 BT 端口不变</b>；改了记得在路由器上同步转发（IPv4：TCP+UDP）。"
+            },
+            {
+                "type": "text",
+                "field": "wizard_ed2k_port",
+                "label": "ED2K TCP 端口",
+                "initValue": "",
+                "description": "改完保存会重启应用。<b>留空表示保持当前 ED2K TCP 端口不变</b>；改了记得在路由器上同步转发（IPv4：TCP+UDP）。",
+                "rules": [
+                    {
+                        "pattern": "^$|^[0-9]{2,5}$",
+                        "message": "端口只能是数字（1-65535），或留空表示不修改"
+                    }
+                ]
+            },
+            {
+                "type": "text",
+                "field": "wizard_ed2k_udp_port",
+                "label": "ED2K UDP 端口",
+                "initValue": "",
+                "description": "改完保存会重启应用。<b>留空表示保持当前 ED2K UDP 端口不变</b>；改了记得在路由器上同步转发（IPv4：TCP+UDP）。",
+                "rules": [
+                    {
+                        "pattern": "^$|^[0-9]{2,5}$",
+                        "message": "端口只能是数字（1-65535），或留空表示不修改"
+                    }
+                ]
+            }
+        ]
+    }
+]

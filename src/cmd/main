@@ -1,0 +1,525 @@
+#!/bin/bash
+# Gopeed for fnOS - lifecycle controller.
+# The script runs as root; the service itself is dropped to the package user.
+set -u
+
+APPNAME="${TRIM_APPNAME:-gopeed}"
+APP_DIR="${TRIM_APPDEST:-/var/apps/${APPNAME}}"
+ETC_DIR="${TRIM_PKGETC:-${APP_DIR}/../etc}"
+VAR_DIR="${TRIM_PKGVAR:-${APP_DIR}/../var}"
+TMP_DIR="${TRIM_PKGTMP:-${APP_DIR}/../tmp}"
+
+BIN="${APP_DIR}/bin/gopeed"
+CONF="${ETC_DIR}/gopeed.conf"
+LOG="${VAR_DIR}/gopeed.log"
+PID_FILE="${VAR_DIR}/gopeed.pid"
+APP_USER="${TRIM_USERNAME:-${APPNAME}}"   # package user, used as a fallback
+RUN_USER="admin"                          # NAS user the engine runs as
+
+# ---------- defaults ----------
+# The desktop entry is written at install time (fnOS bakes the URL into the app
+# record), so the port is a build-time constant. Override with FNOS_GOPEED_PORT
+# only for debugging: the desktop icon will still point at the baked port.
+DEFAULT_PORT="__PORT__"
+WEB_PORT="$DEFAULT_PORT"
+WEB_USER="admin"
+WEB_PASS=""
+DOWNLOAD_DIR=""
+BT_PORT="51413"
+ED2K_PORT="4662"          # eMule 默认 TCP
+ED2K_UDP_PORT="4672"      # eMule 默认 UDP
+AUTO_START="true"
+
+# resolve target identity: NAS user (can access user data) or package user
+resolve_identity() {
+    if [ -n "$RUN_USER" ] && id -u "$RUN_USER" >/dev/null 2>&1; then
+        RUN_UID="$(id -u "$RUN_USER")"
+        RUN_GID="$(id -g "$RUN_USER")"
+    elif id -u "$APP_USER" >/dev/null 2>&1; then
+        RUN_USER="$APP_USER"
+        RUN_UID="$(id -u "$APP_USER")"
+        RUN_GID="$(id -g "$APP_USER")"
+    else
+        RUN_USER="root"; RUN_UID=0; RUN_GID=0
+    fi
+}
+
+resolve_identity
+
+mkdir -p "$ETC_DIR" "$VAR_DIR" "$TMP_DIR" 2>/dev/null
+
+if [ -f "$CONF" ]; then
+    # shellcheck disable=SC1090
+    . "$CONF"
+fi
+
+# always win over a stale value written by an older package version
+WEB_PORT="${FNOS_GOPEED_PORT:-$DEFAULT_PORT}"
+
+log() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $*" >> "$LOG" 2>/dev/null
+}
+
+fail() {
+    echo "$*" > "${TRIM_TEMP_LOGFILE:-/dev/stderr}"
+    log "ERROR: $*"
+    exit 1
+}
+
+# The first data-share path is the pre-created downloads folder; the system has
+# already granted the package user ACL access there.
+share_root() {
+    local p="${TRIM_DATA_SHARE_PATHS:-}"
+    p="${p%%:*}"
+    if [ -z "$p" ]; then
+        local vol
+        vol="$(dirname "$ETC_DIR")"
+        p="${vol}/@appshare/gopeed/downloads"
+    fi
+    printf '%s' "$p"
+}
+
+resolve_download_dir() {
+    if [ -n "$DOWNLOAD_DIR" ]; then
+        printf '%s' "$DOWNLOAD_DIR"
+    else
+        printf '%s' "$(share_root)"
+    fi
+}
+
+ensure_dirs() {
+    local dl
+    dl="$(resolve_download_dir)"
+    [ -n "$dl" ] && mkdir -p "$dl" 2>/dev/null
+    mkdir -p "$VAR_DIR/storage" "$VAR_DIR/tmp" 2>/dev/null
+    if [ "$(id -u)" -eq 0 ] && [ "${RUN_UID:-0}" -ne 0 ]; then
+        chown -R "${RUN_UID}:${RUN_GID}" "$VAR_DIR" 2>/dev/null || true
+    fi
+}
+
+# Uninstall with "purge": remove the package config (@appconf) and the whole data
+# dir (@appdata) - settings, task database, extensions, cached TLS material,
+# temp files and logs. Downloaded files are never touched.
+purge_app_data() {
+    local target real
+    local -a doomed=()
+    for target in "$VAR_DIR" "$ETC_DIR" "$TMP_DIR"; do
+        [ -n "$target" ] || continue
+        real="$(readlink -f "$target" 2>/dev/null || printf '%s' "$target")"
+        case "$real" in
+            /vol*/@appdata/"$APPNAME"|/vol*/@appconf/"$APPNAME"|/vol*/@apptmp/"$APPNAME")
+                doomed+=( "$real" )
+                ;;
+            /var/apps/"$APPNAME"/var|/var/apps/"$APPNAME"/etc|/var/apps/"$APPNAME"/tmp)
+                doomed+=( "$real" )
+                ;;
+            *)
+                log "purge: skip unexpected path ${real}"
+                ;;
+        esac
+    done
+    # log first: VAR_DIR (and with it the log file) is about to disappear
+    for real in "${doomed[@]}"; do
+        log "purge: removing ${real}"
+    done
+    for real in "${doomed[@]}"; do
+        rm -rf "$real" 2>/dev/null || true
+    done
+    # nothing left to log into
+    LOG=/dev/null
+}
+
+# NOTE: /vol* is mounted with `trimacl`; POSIX ACLs are accepted by setfacl but
+# are NOT honoured for access decisions, and non-owner access is decided by the
+# fnOS ACL layer. The only reliable way for a downloader to write into user
+# folders is to run as a NAS user (see RUN_USER), which is what this script does.
+# setfacl is kept as a best effort for POSIX-only volumes.
+grant_acl() {
+    local p="$1"
+    [ -n "$p" ] || return 0
+    [ -d "$p" ] || return 0
+    [ "$(id -u)" -eq 0 ] || return 0
+    id "$APP_USER" >/dev/null 2>&1 || return 0
+    command -v setfacl >/dev/null 2>&1 || return 0
+    case "$p" in
+        /vol[0-9]*/*) ;;
+        *) return 0 ;;
+    esac
+    setfacl -m "u:${APP_USER}:rwx" "$p" 2>/dev/null || true
+    setfacl -d -m "u:${APP_USER}:rwx" "$p" 2>/dev/null || true
+    find "$p" -mindepth 1 -maxdepth 1 -type d -exec setfacl -m "u:${APP_USER}:rwx" {} \; 2>/dev/null || true
+}
+
+# Authorized directories come from the app's settings page; fall back to the
+# appcenter database because the env var is not always exported.
+authorized_paths() {
+    local paths="${TRIM_DATA_ACCESSIBLE_PATHS:-}"
+    if [ -z "$paths" ] && [ "$(id -u)" -eq 0 ] && command -v psql >/dev/null 2>&1; then
+        case "$APPNAME" in
+            *[!0-9A-Za-z_-]*) ;;
+            *)
+                paths="$(runuser -u postgres -- psql -d appcenter -Atc \
+                    "select coalesce(string_agg(path, ':' order by id), '') from app_authorization_path where app_id = (select id from app where app_name = '$APPNAME' order by id desc limit 1)" \
+                    2>/dev/null || true)"
+                ;;
+        esac
+    fi
+    printf '%s' "$paths"
+}
+
+apply_authorizations() {
+    local old_ifs list p
+    list="$(authorized_paths)"
+    [ -n "$list" ] || return 0
+    old_ifs="$IFS"; IFS=":"
+    for p in $list; do
+        [ -n "$p" ] && grant_acl "$p"
+    done
+    IFS="$old_ifs"
+}
+
+is_running() {
+    [ -f "$PID_FILE" ] || return 1
+    local pid
+    pid="$(head -n 1 "$PID_FILE" 2>/dev/null | tr -d '[:space:]')"
+    [ -n "$pid" ] || return 1
+    kill -0 "$pid" 2>/dev/null || return 1
+    if [ -r "/proc/$pid/cmdline" ]; then
+        tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q "gopeed" || return 1
+    fi
+    return 0
+}
+
+port_in_use() {
+    local port="$1"
+    [ -n "$port" ] || return 1
+    if command -v ss >/dev/null 2>&1; then
+        ss -ltn 2>/dev/null | awk '{print $4}' | grep -qE "[:.]${port}$"
+        return $?
+    fi
+    return 1
+}
+
+# ---------------------------------------------------------------------------
+# Public port is served by a small tunnel (app/bin/gopeed-tunnel.py) that
+# accepts both plain HTTP and TLS, so the same desktop entry works from an http
+# LAN desktop and an https (DDNS) desktop. Gopeed itself listens on loopback.
+# ---------------------------------------------------------------------------
+TUNNEL_PY="${APP_DIR}/bin/gopeed-tunnel.py"
+TUNNEL_PID_FILE="${VAR_DIR}/tunnel.pid"
+TUNNEL_READY="${VAR_DIR}/tunnel.enabled"
+CERT_DIR="${VAR_DIR}/tls"
+CERT_CONF="/usr/trim/etc/network_gateway_cert.conf"
+INTERNAL_PORT=$((WEB_PORT + 1))
+
+python_bin() {
+    if command -v python3 >/dev/null 2>&1; then
+        command -v python3
+    elif [ -x /var/apps/python312/target/bin/python3 ]; then
+        printf '%s' /var/apps/python312/target/bin/python3
+    fi
+}
+
+tunnel_running() {
+    [ -f "$TUNNEL_PID_FILE" ] || return 1
+    local pid
+    pid="$(head -n 1 "$TUNNEL_PID_FILE" 2>/dev/null | tr -d '[:space:]')"
+    [ -n "$pid" ] || return 1
+    kill -0 "$pid" 2>/dev/null || return 1
+    if [ -r "/proc/$pid/cmdline" ]; then
+        tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q "gopeed-tunnel" || return 1
+    fi
+    return 0
+}
+
+prepare_certs() {
+    # Copy the certs fnOS manages (per host, incl. the DDNS domain) into the app
+    # data dir so the unprivileged tunnel process can read them.
+    local py="$1"
+    [ -n "$py" ] || return 1
+    [ -r "$CERT_CONF" ] || { log "no ${CERT_CONF}; serving http only"; return 1; }
+    mkdir -p "$CERT_DIR"
+    if ! "$py" "$TUNNEL_PY" --prepare "$CERT_CONF" "$CERT_DIR" >> "$LOG" 2>&1; then
+        log "cert prepare failed"
+        return 1
+    fi
+    chmod 700 "$CERT_DIR" 2>/dev/null || true
+    if [ "$(id -u)" -eq 0 ] && [ "${RUN_UID:-0}" -ne 0 ]; then
+        chown -R "${RUN_UID}:${RUN_GID}" "$CERT_DIR" 2>/dev/null || true
+    fi
+    return 0
+}
+
+run_user_home() {
+    local home
+    home="$(getent passwd "$RUN_USER" 2>/dev/null | cut -d: -f6)"
+    [ -n "$home" ] && [ -d "$home" ] || home="$VAR_DIR"
+    printf '%s' "$home"
+}
+
+start_engine() {
+    local bind="$1" port="$2" dl="$3"
+    local -a run=( "$BIN" -A "$bind" -P "$port" -d "$VAR_DIR/storage" -c "$VAR_DIR/config.json" )
+    if [ -n "$WEB_PASS" ]; then
+        run+=( -u "$WEB_USER" -p "$WEB_PASS" )
+    fi
+    local dlcfg
+    dlcfg="{\"downloadDir\":\"${dl}\",\"autoStartTasks\":${AUTO_START},\"protocolConfig\":{\"bt\":{\"listenPort\":${BT_PORT}},\"ed2k\":{\"listenPort\":${ED2K_PORT},\"udpPort\":${ED2K_UDP_PORT}}}}"
+
+    (
+        cd "$APP_DIR" || exit 1
+        export GOPEED_DOWNLOAD_CONFIG="$dlcfg"
+        export GOPEED_TEMP_DIR="$VAR_DIR/tmp"
+        # HOME decides Gopeed's fallback download dir; without it the engine
+        # would use the invoking user's HOME (root -> /root/Downloads)
+        export HOME="$(run_user_home)"
+        if [ "$(id -u)" -eq 0 ] && [ "${RUN_UID:-0}" -ne 0 ]; then
+            if command -v setpriv >/dev/null 2>&1; then
+                exec setpriv --reuid "$RUN_UID" --regid "$RUN_GID" --init-groups -- "${run[@]}"
+            fi
+            exec runuser -u "$RUN_USER" -- "${run[@]}"
+        fi
+        exec "${run[@]}"
+    ) >> "$LOG" 2>&1 &
+
+    echo "$!" > "$PID_FILE"
+}
+
+start_tunnel() {
+    local py="$1"
+    (
+        cd "$APP_DIR" || exit 1
+        export TUNNEL_PORT="$WEB_PORT"
+        export UPSTREAM_PORT="$INTERNAL_PORT"
+        export CERT_DIR="$CERT_DIR"
+        if [ "$(id -u)" -eq 0 ] && [ "${RUN_UID:-0}" -ne 0 ]; then
+            if command -v setpriv >/dev/null 2>&1; then
+                exec setpriv --reuid "$RUN_UID" --regid "$RUN_GID" --init-groups -- "$py" "$TUNNEL_PY"
+            fi
+            exec runuser -u "$RUN_USER" -- "$py" "$TUNNEL_PY"
+        fi
+        exec "$py" "$TUNNEL_PY"
+    ) >> "$LOG" 2>&1 &
+    echo "$!" > "$TUNNEL_PID_FILE"
+}
+
+# Keep the engine's own persisted config in step with gopeed.conf: the wizard
+# value is otherwise only applied on the very first start of a fresh storage.
+sync_config() {
+    local py="$1" dl="$2"
+    [ -n "$py" ] && [ -f "${APP_DIR}/bin/gopeed-sync.py" ] || return 0
+    [ -n "$dl" ] || return 0
+    local out rc n=0
+    while [ "$n" -lt 3 ]; do
+        out="$("$py" "${APP_DIR}/bin/gopeed-sync.py" --port "$INTERNAL_PORT" --dir "$dl" \
+            --bt-port "$BT_PORT" --ed2k-tcp "$ED2K_PORT" --ed2k-udp "$ED2K_UDP_PORT" \
+            --user "$WEB_USER" --pass "$WEB_PASS" 2>&1)"
+        rc=$?
+        [ "$rc" -eq 0 ] && break
+        n=$((n + 1))
+        sleep 1
+    done
+    log "sync config (rc=$rc): ${out:-skip}"
+}
+
+start_app() {
+    if is_running; then
+        log "already running"
+        return 0
+    fi
+    [ -x "$BIN" ] || fail "Gopeed 主程序缺失或不可执行：${BIN}"
+
+    [ -n "$WEB_PORT" ] || WEB_PORT="$DEFAULT_PORT"
+    INTERNAL_PORT=$((WEB_PORT + 1))
+    if port_in_use "$WEB_PORT"; then
+        local line who pid
+        line="$(ss -ltnp 2>/dev/null | awk -v p=":${WEB_PORT}" '$4 ~ p"$"' | head -n 1)"
+        who="$(printf '%s' "$line" | sed -n 's/.*users:(("\{1,\}\([^"]*\)".*/\1/p')"
+        pid="$(printf '%s' "$line" | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p')"
+        log "port ${WEB_PORT} busy: ${line}"
+        fail "端口 ${WEB_PORT} 已被 ${who:-其他程序}${pid:+（pid ${pid}）} 占用。请先停止该程序，或卸载本应用后用 python build.py --port <新端口> 重新出包安装。"
+    fi
+
+    local dl
+    dl="$(resolve_download_dir)"
+    ensure_dirs
+    grant_acl "$dl"
+    apply_authorizations
+
+    if [ -n "$dl" ] && [ "$(id -u)" -eq 0 ] && [ "${RUN_UID:-0}" -ne 0 ]; then
+        if [ ! -d "$dl" ]; then
+            mkdir -p "$dl" 2>/dev/null || fail "无法创建下载目录 ${dl}。"
+            chown "${RUN_UID}:${RUN_GID}" "$dl" 2>/dev/null || true
+        fi
+        setpriv --reuid "$RUN_UID" --regid "$RUN_GID" --init-groups -- test -w "$dl" 2>/dev/null \
+            || fail "以用户 ${RUN_USER} 身份无法写入下载目录 ${dl}，请换一个该用户有权限的目录。"
+    fi
+
+    local py bind
+    py="$(python_bin)"
+    if [ -n "$py" ] && [ -f "$TUNNEL_PY" ]; then
+        bind="127.0.0.1"
+        : > "$TUNNEL_READY"
+        prepare_certs "$py" || log "tunnel will serve http only (no certificate)"
+    else
+        bind="0.0.0.0"
+        rm -f "$TUNNEL_READY"
+        log "python3 not found: https support disabled, binding ${WEB_PORT} directly"
+    fi
+
+    log "starting: port=${WEB_PORT} bind=${bind} internal=${INTERNAL_PORT} downloads=${dl} run_user=${RUN_USER}(${RUN_UID}:${RUN_GID}) bt=${BT_PORT} ed2k=${ED2K_PORT}/${ED2K_UDP_PORT}"
+
+    if [ -f "$TUNNEL_READY" ]; then
+        start_engine "$bind" "$INTERNAL_PORT" "$dl"
+    else
+        start_engine "$bind" "$WEB_PORT" "$dl"
+    fi
+
+    # ready == process alive AND actually listening on the internal port
+    local i=0
+    while [ "$i" -lt 20 ]; do
+        sleep 1
+        if is_running && port_in_use "$INTERNAL_PORT"; then break; fi
+        i=$((i + 1))
+    done
+    if ! is_running; then
+        log "start failed, log tail: $(tail -n 5 "$LOG" 2>/dev/null | tr '\n' ' ')"
+        rm -f "$PID_FILE"
+        fail "Gopeed 启动失败，请查看日志：${LOG}"
+    fi
+
+    if [ -f "$TUNNEL_READY" ]; then
+        start_tunnel "$py"
+        local j=0
+        while [ "$j" -lt 10 ]; do
+            sleep 1
+            if tunnel_running && port_in_use "$WEB_PORT"; then
+                break
+            fi
+            j=$((j + 1))
+        done
+        if ! tunnel_running; then
+            rm -f "$TUNNEL_READY"
+            log "tunnel failed to start, fell back to direct http mode"
+        fi
+    fi
+
+    sync_config "$py" "$dl"
+    log "started engine pid=$(cat "$PID_FILE" 2>/dev/null) tunnel=$(cat "$TUNNEL_PID_FILE" 2>/dev/null || echo none)"
+    return 0
+}
+
+stop_app() {
+    local pid i=0
+    if tunnel_running; then
+        pid="$(head -n 1 "$TUNNEL_PID_FILE" | tr -d '[:space:]')"
+        log "stopping tunnel pid=$pid"
+        kill -TERM "$pid" 2>/dev/null || true
+    fi
+    rm -f "$TUNNEL_PID_FILE"
+
+    if is_running; then
+        pid="$(head -n 1 "$PID_FILE" | tr -d '[:space:]')"
+        log "stopping pid=$pid"
+        kill -TERM "$pid" 2>/dev/null || true
+        while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 20 ]; do
+            sleep 1
+            i=$((i + 1))
+        done
+        if kill -0 "$pid" 2>/dev/null; then
+            log "force kill pid=$pid"
+            kill -KILL "$pid" 2>/dev/null || true
+            sleep 1
+        fi
+    fi
+    rm -f "$PID_FILE"
+    return 0
+}
+
+write_conf() {
+    mkdir -p "$ETC_DIR"
+    {
+        echo "# generated by the Gopeed fnOS package - edit via App Center app settings"
+        echo "# access port is fixed at ${WEB_PORT} (desktop entry is baked at install time)"
+        echo "WEB_USER=\"${WEB_USER}\""
+        echo "WEB_PASS=\"${WEB_PASS}\""
+        echo "DOWNLOAD_DIR=\"${DOWNLOAD_DIR}\""
+        echo "RUN_USER=\"${RUN_USER}\""
+        echo "BT_PORT=\"${BT_PORT}\""
+        echo "ED2K_PORT=\"${ED2K_PORT}\""
+        echo "ED2K_UDP_PORT=\"${ED2K_UDP_PORT}\""
+        echo "AUTO_START=\"${AUTO_START}\""
+    } > "$CONF"
+    chmod 600 "$CONF" 2>/dev/null
+    if [ "$(id -u)" -eq 0 ] && [ "${RUN_UID:-0}" -ne 0 ]; then
+        chown "${RUN_UID}:${RUN_GID}" "$CONF" 2>/dev/null || true
+    fi
+}
+
+merge_wizard() {
+    [ -n "${wizard_run_user:-}" ] && RUN_USER="$wizard_run_user" && resolve_identity
+    [ -n "${wizard_web_user:-}" ] && WEB_USER="$wizard_web_user"
+    [ -n "${wizard_web_pass:-}" ] && WEB_PASS="$wizard_web_pass"
+    [ -n "${wizard_download_dir:-}" ] && DOWNLOAD_DIR="$wizard_download_dir"
+    [ -n "${wizard_bt_port:-}" ] && BT_PORT="$wizard_bt_port"
+    [ -n "${wizard_ed2k_port:-}" ] && ED2K_PORT="$wizard_ed2k_port"
+    [ -n "${wizard_ed2k_udp_port:-}" ] && ED2K_UDP_PORT="$wizard_ed2k_udp_port"
+    [ -n "${wizard_auto_start:-}" ] && AUTO_START="$wizard_auto_start"
+    return 0
+}
+
+case "${1:-status}" in
+    start)
+        start_app
+        ;;
+    stop)
+        stop_app
+        ;;
+    restart)
+        stop_app
+        start_app
+        ;;
+    status)
+        if is_running; then
+            # a running engine without its front tunnel means the web UI is
+            # unreachable, so report "not running" and let the system restart us
+            if [ -f "$TUNNEL_READY" ] && ! tunnel_running; then
+                exit 3
+            fi
+            exit 0
+        fi
+        exit 3
+        ;;
+    install_init|upgrade_init|config_init|uninstall_init)
+        exit 0
+        ;;
+    install_callback|upgrade_callback)
+        merge_wizard
+        [ -z "$DOWNLOAD_DIR" ] && DOWNLOAD_DIR="$(share_root)"
+        write_conf
+        ensure_dirs
+        grant_acl "$DOWNLOAD_DIR"
+        [ -x "$BIN" ] || chmod 755 "$BIN" 2>/dev/null || true
+        exit 0
+        ;;
+    config_callback)
+        merge_wizard
+        write_conf
+        ensure_dirs
+        grant_acl "$DOWNLOAD_DIR"
+        stop_app
+        start_app
+        exit 0
+        ;;
+    uninstall_callback)
+        stop_app
+        if [ "${wizard_data_action:-keep}" = "purge" ]; then
+            purge_app_data
+        fi
+        exit 0
+        ;;
+    *)
+        echo "usage: $0 {start|stop|restart|status}" >&2
+        exit 1
+        ;;
+esac

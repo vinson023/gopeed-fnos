@@ -1,0 +1,9 @@
+# build outputs
+build/
+dist/
+scratch/
+*.fpk
+
+# python
+__pycache__/
+*.py[cod]

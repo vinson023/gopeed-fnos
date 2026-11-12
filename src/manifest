@@ -1,0 +1,25 @@
+appname               = gopeed
+version               = 1.9.3-13
+display_name          = Gopeed
+desc                  = Gopeed 是一款现代下载器（Go + Flutter 构建），支持 HTTP/HTTPS、BitTorrent、磁力链接与 Metalink。<br>内置完整 Web 界面，装完打开桌面图标即可添加任务、查看速度与做种，无需另外部署后端。
+source                = thirdparty
+platform              = __PLATFORM__
+
+developer             = vinson023
+publisher             = vinson023
+maintainer            = vinson023
+maintainer_url        = https://gopeed.com
+distributor           = vinson023
+distributor_url       = https://gopeed.com
+
+os_min_version        = 1.1.3100
+desktop_uidir         = ui
+desktop_applaunchname = gopeed.main
+
+service_port          = __PORT__
+checkport             = false
+ctl_stop              = true
+
+disable_authorization_path = false
+
+changelog             = 1.9.3-13 首个飞牛版本（内置 Gopeed 1.9.3）；Web 端口 38099；HTTP/HTTPS 自适应入口（IPv4+IPv6 双栈）；安装向导设置的下载目录与 BT 监听端口会覆盖引擎里已存在的旧配置（BT/ED2K 端口不再随机）；删除任务时清理遗留的 .part 分片文件；卸载可选清空配置与数据。。：内置 Gopeed 官方 headless 引擎与 Web UI；支持 HTTP/BT/磁力；下载目录可指向飞牛共享目录或授权目录；支持页面登录保护与 BT 监听端口设置。
