@@ -143,3 +143,11 @@ ARM64 包已通过架构校验与 `qemu-aarch64` 下的启动验证，但未在�
 
 打包脚本与应用包配置同样以 **GPL-3.0** 发布；`src/LICENSE` 是随包分发所必需的
 Gopeed 许可证。Gopeed 版权归 [GopeedLab](https://github.com/GopeedLab/gopeed) 所有。
+
+### 第三方组件
+
+| 组件 | 许可 |
+|---|---|
+| Gopeed 引擎与 Web 前端（内嵌在 `src/app/bin/gopeed`） | GPL-3.0 |
+
+> 本项目是非官方移植，与 Gopeed 官方无关；问题请提到本仓库的 Issues。
