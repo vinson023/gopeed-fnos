@@ -113,8 +113,11 @@ fnpack build --directory build/gopeed-arm
    而 BT 未完成数据写在 `<name>.part`，任务删了分片还在。隧道在转发
    `DELETE /api/v1/tasks/<id>?force=true` 时先读任务 meta，删除成功后再补删 `.part`
    （严格校验路径在该任务下载目录内）；`force=false` 一律不动。
-8. **卸载清理可选**：向导可选「保留 / 全部清空」。清空时删除 `@appconf/<app>` 与
-   `@appdata/<app>`（配置、任务库、缓存、日志、证书副本），路径做白名单校验，下载目录不动。
+8. **卸载清理可选**：向导是「是否保留应用配置与数据」两项单选。选「全部清空」时删除
+   `@appconf`（conf）、`@appdata`（任务库、缓存、日志、证书副本）、`@apptemp`（临时文件）、
+   `@apphome`（应用 HOME），路径做白名单校验；`@appshare/<app>`（共享目录/下载文件）始终保留。
+   ⚠️ fnOS 的临时目录是 **`@apptemp`**（带 e），不是 `@apptmp`；1.9.3-13 写错导致清空后
+   仍留一个临时目录，1.9.3-14 已修正。
 
 ## 已知限制
 

@@ -97,36 +97,67 @@ ensure_dirs() {
     fi
 }
 
-# Uninstall with "purge": remove the package config (@appconf) and the whole data
-# dir (@appdata) - settings, task database, extensions, cached TLS material,
-# temp files and logs. Downloaded files are never touched.
+# Uninstall with "purge": remove everything the package owns except the program
+# dir (the system removes that) and the share with the user's downloads.
+#
+#   @appconf   gopeed.conf     账号 / 密码 / 端口 / 下载目录
+#   @appdata   gopeed.db       任务列表与进度、扩展、缓存、日志、证书副本
+#   @apptemp   引擎临时文件（未完成的 .part 之外的临时数据）
+#   @apphome   应用 HOME（部分运行时缓存）
+#
+# 下载目录（DOWNLOAD_DIR）与共享目录 @appshare/<app>/downloads 一律不动：
+# 那里放的是用户下载好的文件，不属于"配置"。
 purge_app_data() {
     local target real
-    local -a doomed=()
-    for target in "$VAR_DIR" "$ETC_DIR" "$TMP_DIR"; do
-        [ -n "$target" ] || continue
-        real="$(readlink -f "$target" 2>/dev/null || printf '%s' "$target")"
-        case "$real" in
-            /vol*/@appdata/"$APPNAME"|/vol*/@appconf/"$APPNAME"|/vol*/@apptmp/"$APPNAME")
-                doomed+=( "$real" )
-                ;;
+    local -a doomed=() kept=()
+
+    add_target() {
+        local path="$1"
+        [ -n "$path" ] || return 0
+        case "$path" in
+            /vol*/@appdata/"$APPNAME"|/vol*/@appconf/"$APPNAME"|\
+            /vol*/@apptemp/"$APPNAME"|/vol*/@apptmp/"$APPNAME"|\
+            /vol*/@apphome/"$APPNAME"|\
             /var/apps/"$APPNAME"/var|/var/apps/"$APPNAME"/etc|/var/apps/"$APPNAME"/tmp)
-                doomed+=( "$real" )
+                doomed+=( "$path" )
                 ;;
             *)
-                log "purge: skip unexpected path ${real}"
+                log "purge: skip unexpected path ${path}"
                 ;;
         esac
+    }
+
+    # 1) whatever the system pointed us at (these are usually symlinks into the volume)
+    for target in "$VAR_DIR" "$ETC_DIR" "$TMP_DIR"; do
+        [ -n "$target" ] || continue
+        add_target "$(readlink -f "$target" 2>/dev/null || printf '%s' "$target")"
     done
+
+    # 2) the per-app siblings on every volume. @apptemp is spelled with an "e" on
+    #    fnOS (`/var/apps/<app>/tmp -> /vol1/@apptemp/<app>`), so both spellings
+    #    are covered - missing it left the temp dir behind after a purge.
+    for real in /vol*/@appdata/"$APPNAME" /vol*/@appconf/"$APPNAME" \
+                /vol*/@apptemp/"$APPNAME" /vol*/@apptmp/"$APPNAME" \
+                /vol*/@apphome/"$APPNAME"; do
+        [ -e "$real" ] && add_target "$real"
+    done
+
+    # the share holds downloaded files - never touched
+    kept=( /vol*/@appshare/"$APPNAME" )
+
     # log first: VAR_DIR (and with it the log file) is about to disappear
     for real in "${doomed[@]}"; do
         log "purge: removing ${real}"
+    done
+    for real in "${kept[@]}"; do
+        [ -e "$real" ] && log "purge: keeping ${real} (downloaded files)"
     done
     for real in "${doomed[@]}"; do
         rm -rf "$real" 2>/dev/null || true
     done
     # nothing left to log into
     LOG=/dev/null
+    return 0
 }
 
 # NOTE: /vol* is mounted with `trimacl`; POSIX ACLs are accepted by setfacl but
